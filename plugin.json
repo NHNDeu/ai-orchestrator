@@ -1,0 +1,15 @@
+{
+  "name": "ai-orchestrator",
+  "displayName": "AI Orchestrator",
+  "description": "Unified dual-engine orchestrator for parallel OpenAI GPT/Codex (ChatGPT Plus) and Claude Code (Static API) subagents, with cost-smart routing, USD budget guardrails, live progress bars, and cross-engine failover.",
+  "version": "2.0.0",
+  "author": "NHNDeu",
+  "homepage": "https://github.com/NHNDeu/ai-orchestrator",
+  "repository": "https://github.com/NHNDeu/ai-orchestrator",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "打开 AI Orchestrator 面板，分别派 1 个 GPT 和 1 个 Claude 子代理并行只读调研当前项目并汇总",
+    "用 AI Orchestrator 双引擎模式实现一个新功能：先拆解架构，自动按性价比与额度分配给 GPT/Claude 并行完成，再交叉 Review",
+    "检查我本机的 GPT Plus 剩余额度、Claude Static API 连通状态和今日花费"
+  ]
+}

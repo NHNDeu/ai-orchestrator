@@ -1,0 +1,38 @@
+{
+  "name": "ai-orchestrator",
+  "version": "2.0.0",
+  "description": "Dual-engine AI Orchestrator MCP App plugin for Google Antigravity: orchestrate parallel GPT/Codex and Claude Code subagents with live Codex-style progress bars, quota-aware routing, and USD budget guardrails.",
+  "private": false,
+  "license": "MIT",
+  "author": "NHNDeu",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NHNDeu/ai-orchestrator.git"
+  },
+  "keywords": [
+    "antigravity",
+    "mcp",
+    "mcp-app",
+    "codex",
+    "claude-code",
+    "orchestrator",
+    "multi-agent"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "verify": "node scripts/verify.mjs",
+    "install:plugin": "node scripts/install.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^2.0.4",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}

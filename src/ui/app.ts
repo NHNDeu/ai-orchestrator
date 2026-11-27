@@ -9,12 +9,25 @@ import type {
   DashboardSnapshot,
   RoutingStrategy,
 } from "../codex-runner.js";
+import type { UuShell, UuSnapshot } from "../uu/types.js";
+import {
+  renderRemoteSidebarBody,
+  renderRemoteStage,
+} from "./remote-view.js";
+
+type DashboardSnapshotWithUu = DashboardSnapshot & {
+  uu?: UuSnapshot;
+};
 
 const app = new App({ name: "AI Orchestrator", version: "2.0.0" }, {});
 
-let snapshot: DashboardSnapshot | null = null;
+let snapshot: DashboardSnapshotWithUu | null = null;
 let selectedTaskId: string | null = null;
 let composeNewMode = false;
+let viewMode: "tasks" | "remote" = "tasks";
+let selectedUuDeviceId: string | null = null;
+let selectedUuSession = "orch-default";
+let uuBusy = false;
 let filterTab: "all" | "active" | "done" = "all";
 let expandedSteps = new Set<string>();
 let collapsedSteps = new Set<string>();
@@ -194,8 +207,32 @@ function renderSidebarThread(t: CodexTask): string {
   `;
 }
 
-function renderSidebar(snap: DashboardSnapshot): string {
-  const { environment, settings, summary, tasks } = snap;
+function renderSidebar(snap: DashboardSnapshotWithUu): string {
+  const { environment, settings, summary, tasks, uu } = snap;
+  const pendingCount = uu?.pending?.length ?? 0;
+  const switcherHtml = `
+    <div class="filter-tabs">
+      <button class="filter-tab ${viewMode === "tasks" ? "active" : ""}" data-view-mode="tasks">任务 (${summary.total})</button>
+      <button class="filter-tab ${viewMode === "remote" ? "active" : ""}" data-view-mode="remote">远程${pendingCount > 0 ? ` (${pendingCount}待批)` : ""}</button>
+    </div>
+  `;
+
+  if (viewMode === "remote") {
+    return `
+      <aside class="sidebar">
+        <div class="brand-row">
+          <div class="brand-title">
+            <span class="brand-dot"></span>
+            <span>AI Orchestrator</span>
+          </div>
+          <button id="newThreadBtn" class="new-thread-btn">+ 新建任务</button>
+        </div>
+        ${switcherHtml}
+        ${renderRemoteSidebarBody(uu, selectedUuDeviceId, selectedUuSession)}
+      </aside>
+    `;
+  }
+
   const visible = filteredTasks(tasks);
   const activeList = visible.filter(
     (t) => t.status === "running" || t.status === "queued",
@@ -221,6 +258,8 @@ function renderSidebar(snap: DashboardSnapshot): string {
         </div>
         <button id="newThreadBtn" class="new-thread-btn ${composeNewMode ? "active" : ""}">+ 新建任务</button>
       </div>
+
+      ${switcherHtml}
 
       <div class="filter-tabs">
         <button class="filter-tab ${filterTab === "all" ? "active" : ""}" data-filter="all">全部 (${summary.total})</button>
@@ -263,9 +302,9 @@ function renderSidebar(snap: DashboardSnapshot): string {
         }
         ${
           claude
-            ? `<div class="quota-mini-row" title="单任务上限 $${claude.maxTaskBudgetUsd.toFixed(2)}">
-                <span>Claude <strong>$${claude.dailyCostUsd.toFixed(2)}</strong>/$${claude.dailyBudgetUsd.toFixed(1)}</span>
-                <div class="quota-mini-track"><div class="quota-mini-fill ${barCls(100 - claudePct)}" style="width:${claudePct}%"></div></div>
+            ? `<div class="quota-mini-row" title="${claude.maxTaskBudgetUsd > 0 ? `单任务上限 $${claude.maxTaskBudgetUsd.toFixed(2)}` : "单任务上限: 无限制"}">
+                <span>Claude <strong>$${claude.dailyCostUsd.toFixed(2)}</strong>${claude.dailyBudgetUsd > 0 ? `/$${claude.dailyBudgetUsd.toFixed(1)}` : " · 无上限"}</span>
+                <div class="quota-mini-track"><div class="quota-mini-fill ${claude.dailyBudgetUsd > 0 ? barCls(100 - claudePct) : "ok"}" style="width:${claude.dailyBudgetUsd > 0 ? claudePct : 100}%"></div></div>
               </div>`
             : ""
         }
@@ -561,15 +600,28 @@ function render(): void {
     selectedTaskId = snapshot.tasks[0].id;
   }
 
+  if (snapshot.uu && snapshot.uu.devices.length > 0) {
+    if (
+      !selectedUuDeviceId ||
+      !snapshot.uu.devices.some((d) => d.deviceId === selectedUuDeviceId)
+    ) {
+      const online = snapshot.uu.devices.find((d) => d.isOnline);
+      selectedUuDeviceId = (online || snapshot.uu.devices[0]).deviceId;
+    }
+  }
+
   const activeTask =
     !composeNewMode && selectedTaskId
       ? snapshot.tasks.find((t) => t.id === selectedTaskId) ?? null
       : null;
 
   const sidebarHtml = renderSidebar(snapshot);
-  const stageHtml = activeTask
-    ? renderThreadStage(activeTask)
-    : renderNewTaskStage(snapshot);
+  const stageHtml =
+    viewMode === "remote"
+      ? renderRemoteStage(snapshot.uu, selectedUuDeviceId, selectedUuSession, uuBusy)
+      : activeTask
+        ? renderThreadStage(activeTask)
+        : renderNewTaskStage(snapshot);
 
   root.innerHTML = `<div class="workspace">${sidebarHtml}${stageHtml}</div>`;
   bindEvents();
@@ -577,8 +629,164 @@ function render(): void {
 
 function bindEvents(): void {
   document.getElementById("newThreadBtn")?.addEventListener("click", () => {
+    viewMode = "tasks";
     composeNewMode = true;
     render();
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-view-mode]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const next = (btn.dataset.viewMode as "tasks" | "remote") || "tasks";
+      viewMode = next;
+      render();
+      if (next === "remote") {
+        void callAppTool("app_uu_state", { refresh: true });
+      }
+    });
+  });
+
+  // Remote view event bindings
+  document.getElementById("uuRefreshBtn")?.addEventListener("click", () => {
+    void callAppTool("app_uu_act", {
+      op: "refresh",
+      deviceId: selectedUuDeviceId || undefined,
+    });
+  });
+  document.getElementById("uuStageRefreshBtn")?.addEventListener("click", () => {
+    void callAppTool("app_uu_act", {
+      op: "refresh",
+      deviceId: selectedUuDeviceId || undefined,
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-uu-device]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectedUuDeviceId = btn.dataset.uuDevice || null;
+      render();
+      if (selectedUuDeviceId) {
+        void callAppTool("app_uu_act", {
+          op: "refresh",
+          deviceId: selectedUuDeviceId,
+        });
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-uu-session]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectedUuSession = btn.dataset.uuSession || "orch-default";
+      render();
+    });
+  });
+
+  document.getElementById("uuNewSessionBtn")?.addEventListener("click", async () => {
+    if (!selectedUuDeviceId) return;
+    const name = `orch-${Date.now().toString(36).slice(-4)}`;
+    selectedUuSession = name;
+    await callAppTool("app_uu_act", {
+      op: "new",
+      deviceId: selectedUuDeviceId,
+      session: name,
+    });
+  });
+
+  document.getElementById("uuToggleEnabledBtn")?.addEventListener("click", async () => {
+    const cur = Boolean(snapshot?.uu?.settings.enabled);
+    await callAppTool("app_uu_settings", { enabled: !cur });
+  });
+
+  document.getElementById("uuToggleReadOnlyBtn")?.addEventListener("click", async () => {
+    const cur = Boolean(snapshot?.uu?.settings.readOnly);
+    await callAppTool("app_uu_settings", { readOnly: !cur });
+  });
+
+  document.getElementById("uuToggleSkipConfirmBtn")?.addEventListener("click", async () => {
+    const cur = Boolean(snapshot?.uu?.settings.skipConfirmForAllowlist);
+    await callAppTool("app_uu_settings", { skipConfirmForAllowlist: !cur });
+  });
+
+  document
+    .getElementById("uuConfirmModeSelect")
+    ?.addEventListener("change", async (e) => {
+      const val = (e.target as HTMLSelectElement).value as
+        | "allowlist"
+        | "always"
+        | "off";
+      await callAppTool("app_uu_settings", { confirmMode: val });
+    });
+
+  document.getElementById("uuToggleAllowBtn")?.addEventListener("click", async (e) => {
+    const id = (e.currentTarget as HTMLButtonElement).dataset.deviceId;
+    if (id) await callAppTool("app_uu_act", { op: "toggle_allow", deviceId: id });
+  });
+
+  document.getElementById("uuKillSessionBtn")?.addEventListener("click", async (e) => {
+    const id = (e.currentTarget as HTMLButtonElement).dataset.deviceId;
+    if (id) {
+      await callAppTool("app_uu_act", {
+        op: "kill",
+        deviceId: id,
+        session: selectedUuSession,
+      });
+    }
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-uu-act]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const act = btn.dataset.uuAct;
+      const pendingId = btn.dataset.pendingId;
+      if (!pendingId) return;
+      if (act === "approve") {
+        await callAppTool("app_uu_act", { op: "approve", pendingId });
+      } else if (act === "approve-allow") {
+        await callAppTool("app_uu_act", {
+          op: "approve",
+          pendingId,
+          alsoAllowDevice: true,
+        });
+      } else if (act === "reject") {
+        await callAppTool("app_uu_act", { op: "reject", pendingId });
+      }
+    });
+  });
+
+  const runUuCommand = async () => {
+    if (!selectedUuDeviceId || uuBusy) return;
+    const input = document.getElementById("uuCmdInput") as HTMLTextAreaElement | null;
+    const cmd = input?.value.trim() || "";
+    if (!cmd) return;
+    const shell =
+      ((document.getElementById("uuShellSelect") as HTMLSelectElement | null)
+        ?.value as UuShell) || "powershell";
+    const sess =
+      (document.getElementById("uuSessionInput") as HTMLInputElement | null)?.value.trim() ||
+      selectedUuSession;
+    selectedUuSession = sess;
+    if (input) input.value = "";
+    uuBusy = true;
+    render();
+    try {
+      await callAppTool("app_uu_act", {
+        op: "exec",
+        deviceId: selectedUuDeviceId,
+        session: sess,
+        shell,
+        command: cmd,
+      });
+    } finally {
+      uuBusy = false;
+      render();
+    }
+  };
+
+  document.getElementById("uuRunCmdBtn")?.addEventListener("click", () => {
+    void runUuCommand();
+  });
+  document.getElementById("uuCmdInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      void runUuCommand();
+    }
   });
 
   document.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach((btn) => {
@@ -796,7 +1004,7 @@ async function callAppTool(
   try {
     const res = await app.callServerTool({ name, arguments: args });
     if (res.structuredContent) {
-      applySnapshot(res.structuredContent as unknown as DashboardSnapshot);
+      applySnapshot(res.structuredContent as Record<string, unknown>);
     }
   } catch {
     // Back off silently
@@ -805,12 +1013,22 @@ async function callAppTool(
   }
 }
 
-function applySnapshot(next: DashboardSnapshot): void {
-  if (!next || !Array.isArray(next.tasks)) return;
-  if (typeof next.serverTime === "number") {
-    clockDriftMs = next.serverTime - Date.now();
+function applySnapshot(next: Record<string, unknown>): void {
+  if (!next) return;
+  if (Array.isArray((next as unknown as DashboardSnapshot).tasks)) {
+    const full = next as unknown as DashboardSnapshotWithUu;
+    if (typeof full.serverTime === "number") {
+      clockDriftMs = full.serverTime - Date.now();
+    }
+    snapshot = full;
+  } else if ("uu" in next && next.uu && snapshot) {
+    snapshot = {
+      ...snapshot,
+      uu: next.uu as UuSnapshot,
+    };
+  } else {
+    return;
   }
-  snapshot = next;
 
   const activeEl = document.activeElement;
   if (
@@ -858,7 +1076,7 @@ function tickTimers(): void {
 
 app.ontoolresult = (result) => {
   if (result?.structuredContent) {
-    applySnapshot(result.structuredContent as unknown as DashboardSnapshot);
+    applySnapshot(result.structuredContent as Record<string, unknown>);
   }
 };
 

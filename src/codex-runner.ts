@@ -948,8 +948,8 @@ export class CodexOrchestrator {
       autoRetryOnRateLimit: true,
       autoOrchestrate: true,
       routingStrategy: "cost-smart",
-      claudeDailyBudgetUsd: 5.0,
-      claudeMaxTaskBudgetUsd: 1.5,
+      claudeDailyBudgetUsd: 0,
+      claudeMaxTaskBudgetUsd: 0,
       autoFallback: true,
     };
 
@@ -963,6 +963,8 @@ export class CodexOrchestrator {
         fs.readFileSync(this.statePath, "utf8"),
       ) as PersistedState;
       if (raw.settings) {
+        const rawDaily = Number(raw.settings.claudeDailyBudgetUsd);
+        const rawTask = Number(raw.settings.claudeMaxTaskBudgetUsd);
         this.settings = {
           ...this.settings,
           ...raw.settings,
@@ -970,14 +972,10 @@ export class CodexOrchestrator {
             6,
             Math.max(1, Number(raw.settings.maxConcurrency) || 3),
           ),
-          claudeDailyBudgetUsd: Math.max(
-            0.2,
-            Number(raw.settings.claudeDailyBudgetUsd) || 5.0,
-          ),
-          claudeMaxTaskBudgetUsd: Math.max(
-            0.1,
-            Number(raw.settings.claudeMaxTaskBudgetUsd) || 1.5,
-          ),
+          claudeDailyBudgetUsd:
+            Number.isFinite(rawDaily) && rawDaily >= 0 ? rawDaily : 0,
+          claudeMaxTaskBudgetUsd:
+            Number.isFinite(rawTask) && rawTask >= 0 ? rawTask : 0,
         };
       }
       if (Array.isArray(raw.tasks)) {
@@ -1065,7 +1063,9 @@ export class CodexOrchestrator {
         ? this.claudeCooldownUntil
         : null;
     const dailyCostUsd = this.computeTodayClaudeSpendUsd();
-    const underBudget = dailyCostUsd < this.settings.claudeDailyBudgetUsd;
+    const hasDailyCap = this.settings.claudeDailyBudgetUsd > 0;
+    const underBudget =
+      !hasDailyCap || dailyCostUsd < this.settings.claudeDailyBudgetUsd;
     const canAutoUse = Boolean(
       claudePath && cfg.configured && !cooldownUntil && underBudget,
     );
@@ -1079,6 +1079,8 @@ export class CodexOrchestrator {
       summary = `API 限流/鉴权冷却中 (至 ${formatResetShort(Math.ceil(cooldownUntil / 1000))})`;
     } else if (!underBudget) {
       summary = `今日已达预算上限 ($${dailyCostUsd.toFixed(2)} / $${this.settings.claudeDailyBudgetUsd.toFixed(2)})`;
+    } else if (!hasDailyCap) {
+      summary = `就绪 (${cfg.baseUrl || "API"} · 今日 $${dailyCostUsd.toFixed(2)} · 无上限)`;
     } else {
       summary = `就绪 (${cfg.baseUrl || "API"} · 今日 $${dailyCostUsd.toFixed(2)} / $${this.settings.claudeDailyBudgetUsd.toFixed(2)})`;
     }
@@ -1217,16 +1219,16 @@ export class CodexOrchestrator {
       this.settings.routingStrategy = patch.routingStrategy;
     }
     if (patch.claudeDailyBudgetUsd !== undefined) {
-      this.settings.claudeDailyBudgetUsd = Math.min(
-        100,
-        Math.max(0.2, Number(patch.claudeDailyBudgetUsd)),
-      );
+      const val = Number(patch.claudeDailyBudgetUsd);
+      this.settings.claudeDailyBudgetUsd = Number.isFinite(val)
+        ? Math.min(1000, Math.max(0, val))
+        : 0;
     }
     if (patch.claudeMaxTaskBudgetUsd !== undefined) {
-      this.settings.claudeMaxTaskBudgetUsd = Math.min(
-        20,
-        Math.max(0.1, Number(patch.claudeMaxTaskBudgetUsd)),
-      );
+      const val = Number(patch.claudeMaxTaskBudgetUsd);
+      this.settings.claudeMaxTaskBudgetUsd = Number.isFinite(val)
+        ? Math.min(200, Math.max(0, val))
+        : 0;
     }
     if (patch.autoFallback !== undefined) {
       this.settings.autoFallback = Boolean(patch.autoFallback);
@@ -1807,9 +1809,14 @@ export class CodexOrchestrator {
       claudeEffort,
       "--permission-mode",
       permMode,
-      "--max-budget-usd",
-      String(this.settings.claudeMaxTaskBudgetUsd),
     ];
+
+    if (this.settings.claudeMaxTaskBudgetUsd > 0) {
+      args.push(
+        "--max-budget-usd",
+        String(this.settings.claudeMaxTaskBudgetUsd),
+      );
+    }
 
     if (
       env.claude.models.balanced &&
@@ -1839,10 +1846,14 @@ export class CodexOrchestrator {
 
     args.push("--", finalPrompt);
 
+    const budgetLabel =
+      this.settings.claudeMaxTaskBudgetUsd > 0
+        ? `预算上限 $${this.settings.claudeMaxTaskBudgetUsd}`
+        : "无预算上限";
     this.appendLog(
       task,
       "info",
-      `启动 Claude 进程 (${useResume ? "resume" : permMode}, model=${task.model}, effort=${claudeEffort}, 预算上限 $${this.settings.claudeMaxTaskBudgetUsd})`,
+      `启动 Claude 进程 (${useResume ? "resume" : permMode}, model=${task.model}, effort=${claudeEffort}, ${budgetLabel})`,
     );
 
     const child = spawn(env.claude.claudePath, args, {

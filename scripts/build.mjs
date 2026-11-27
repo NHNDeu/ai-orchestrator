@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import esbuild from "esbuild";
 import fs from "node:fs";
 import path from "node:path";
@@ -45,6 +46,29 @@ const finalHtml = template
 
 fs.writeFileSync(path.join(distDir, "dashboard.html"), finalHtml, "utf8");
 
+// 3. Compile zero-dependency Windows ConPTY helper (win32 only)
+let conptyInfo = "";
+if (process.platform === "win32") {
+  const cscCandidates = [
+    "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe",
+    "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe",
+  ];
+  const cscPath = cscCandidates.find((p) => fs.existsSync(p));
+  if (!cscPath) {
+    throw new Error(
+      "Cannot locate .NET Framework csc.exe to compile src/uu/conpty.cs",
+    );
+  }
+  const conptySrc = path.join(rootDir, "src", "uu", "conpty.cs");
+  const conptyExe = path.join(distDir, "uu-conpty.exe");
+  execFileSync(
+    cscPath,
+    ["/nologo", "/optimize+", "/target:exe", `/out:${conptyExe}`, conptySrc],
+    { cwd: rootDir, stdio: "inherit", windowsHide: true },
+  );
+  conptyInfo = ` and dist/uu-conpty.exe (${fs.statSync(conptyExe).size} B)`;
+}
+
 console.log(
-  `Built dist/server.cjs (${fs.statSync(path.join(distDir, "server.cjs")).size} B) and dist/dashboard.html (${fs.statSync(path.join(distDir, "dashboard.html")).size} B)`,
+  `Built dist/server.cjs (${fs.statSync(path.join(distDir, "server.cjs")).size} B), dist/dashboard.html (${fs.statSync(path.join(distDir, "dashboard.html")).size} B)${conptyInfo}`,
 );

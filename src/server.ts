@@ -8,6 +8,8 @@ import {
   type CodexTask,
   type DashboardSnapshot,
 } from "./codex-runner.js";
+import { UuRemoteManager } from "./uu/manager.js";
+import { registerUuTools } from "./uu/tools.js";
 
 const APP_URI = "ui://ai-orchestrator/dashboard.html";
 
@@ -46,7 +48,7 @@ function formatSummaryText(snapshot: DashboardSnapshot): string {
   const lines = [
     `AI Orchestrator [GPT: ${environment.codexVersion || "不可用"} (${environment.loggedIn ? "Plus已登录" : environment.loginMessage}) | Claude: ${c.claudeVersion || "不可用"} (${c.summary})]`,
     `GPT额度: ${q.summary} | 健康度: ${q.health} | 可自动调度: ${q.canAutoUse ? "是" : "否"}`,
-    `Claude API: ${c.canAutoUse ? "可用" : "受限"} | 今日花费: $${c.dailyCostUsd.toFixed(4)} / $${c.dailyBudgetUsd.toFixed(2)} | 单任务上限: $${c.maxTaskBudgetUsd.toFixed(2)}`,
+    `Claude API: ${c.canAutoUse ? "可用" : "受限"} | 今日花费: $${c.dailyCostUsd.toFixed(4)} / ${c.dailyBudgetUsd > 0 ? `$${c.dailyBudgetUsd.toFixed(2)}` : "无上限"} | 单任务上限: ${c.maxTaskBudgetUsd > 0 ? `$${c.maxTaskBudgetUsd.toFixed(2)}` : "无限制"}`,
     `路由策略: ${stratLabels[settings.routingStrategy] || settings.routingStrategy} | 自动编排: ${settings.autoOrchestrate ? "开" : "关"} | 跨引擎容灾: ${settings.autoFallback ? "开" : "关"} | 并发上限: ${settings.maxConcurrency}`,
     `任务统计: 总计 ${summary.total} · 运行中 ${summary.running} · 排队 ${summary.queued} · 完成 ${summary.completed} · 失败 ${summary.failed} · 总进度 ${summary.overallProgress}%${summary.totalCostUsd > 0 ? ` · Claude累计 $${summary.totalCostUsd.toFixed(4)}` : ""}`,
   ];
@@ -117,6 +119,11 @@ function formatTasksStatusText(
 async function main(): Promise<void> {
   const dataDir = parseDataDirArg(process.argv.slice(2));
   const orchestrator = new CodexOrchestrator(dataDir);
+  const uuManager = new UuRemoteManager(dataDir);
+  const withUu = (snap: DashboardSnapshot): Record<string, unknown> => ({
+    ...(snap as unknown as Record<string, unknown>),
+    uu: uuManager.getCachedSnapshot(),
+  });
 
   const server = new McpServer({
     name: "ai-orchestrator",
@@ -178,7 +185,7 @@ async function main(): Promise<void> {
       const snapshot = await orchestrator.getSnapshot({ includeLogs: true });
       return {
         content: [{ type: "text", text: formatSummaryText(snapshot) }],
-        structuredContent: snapshot as unknown as Record<string, unknown>,
+        structuredContent: withUu(snapshot),
       };
     },
   );
@@ -493,7 +500,7 @@ async function main(): Promise<void> {
       const snapshot = await orchestrator.getSnapshot({ includeLogs: true });
       return {
         content: [{ type: "text", text: "ok" }],
-        structuredContent: snapshot as unknown as Record<string, unknown>,
+        structuredContent: withUu(snapshot),
       };
     },
   );
@@ -511,7 +518,7 @@ async function main(): Promise<void> {
       const snapshot = await orchestrator.getSnapshot({ includeLogs: true });
       return {
         content: [{ type: "text", text: "ok" }],
-        structuredContent: snapshot as unknown as Record<string, unknown>,
+        structuredContent: withUu(snapshot),
       };
     },
   );
@@ -529,7 +536,7 @@ async function main(): Promise<void> {
       const snapshot = await orchestrator.getSnapshot({ includeLogs: true });
       return {
         content: [{ type: "text", text: "ok" }],
-        structuredContent: snapshot as unknown as Record<string, unknown>,
+        structuredContent: withUu(snapshot),
       };
     },
   );
@@ -575,7 +582,7 @@ async function main(): Promise<void> {
       const snapshot = await orchestrator.getSnapshot({ includeLogs: true });
       return {
         content: [{ type: "text", text: "ok" }],
-        structuredContent: snapshot as unknown as Record<string, unknown>,
+        structuredContent: withUu(snapshot),
       };
     },
   );
@@ -594,8 +601,8 @@ async function main(): Promise<void> {
         routingStrategy: z
           .enum(["cost-smart", "quality-first", "codex-only", "claude-only"])
           .optional(),
-        claudeDailyBudgetUsd: z.number().min(0.2).max(100).optional(),
-        claudeMaxTaskBudgetUsd: z.number().min(0.1).max(20).optional(),
+        claudeDailyBudgetUsd: z.number().min(0).max(1000).optional(),
+        claudeMaxTaskBudgetUsd: z.number().min(0).max(200).optional(),
         autoFallback: z.boolean().optional(),
       },
       _meta: APP_ONLY,
@@ -605,7 +612,7 @@ async function main(): Promise<void> {
       const snapshot = await orchestrator.getSnapshot({ includeLogs: true });
       return {
         content: [{ type: "text", text: "ok" }],
-        structuredContent: snapshot as unknown as Record<string, unknown>,
+        structuredContent: withUu(snapshot),
       };
     },
   );
@@ -623,10 +630,28 @@ async function main(): Promise<void> {
       const snapshot = await orchestrator.getSnapshot({ includeLogs: true });
       return {
         content: [{ type: "text", text: "ok" }],
-        structuredContent: snapshot as unknown as Record<string, unknown>,
+        structuredContent: withUu(snapshot),
       };
     },
   );
+
+  registerUuTools(server, uuManager, APP_URI);
+
+  let cleanedUp = false;
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    uuManager.shutdown();
+  };
+  process.stdin.on("end", cleanup);
+  process.on("SIGINT", () => {
+    cleanup();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    cleanup();
+    process.exit(0);
+  });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
